@@ -1,0 +1,4 @@
+/etc/init.d/S61nfs stop
+cp /mnt/md1/exports /etc/exports
+/etc/init.d/S61nfs start
+sudo mount_nfs -o resvport 5.5.5.2:/mnt/md1/NAS /Volumes/rydznas

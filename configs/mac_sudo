@@ -1,0 +1,6 @@
+sudo -i
+visudo
+%wheel 	ALL = (ALL) NOPASSWD: ALL
+
+sudo dseditgroup -o edit -a robryd -t user admin
+sudo dseditgroup -o edit -a robryd -t user wheel

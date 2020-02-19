@@ -1,0 +1,11 @@
+#!/bin/bash
+echo "OS:" `cat /etc/centos-release`
+#echo "OS:" `cat /etc/redhat-release`
+echo "Kernel:" `uname -r`
+echo "Public IP:" `curl -s ipecho.net/plain`
+echo " "
+echo "who is logged in?"
+who -Hu
+echo " "
+echo "Uptime"
+uptime

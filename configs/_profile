@@ -1,0 +1,7 @@
+#/usr/local/bin/dynmotd
+
+
+alias ll="ls -aFGhl"
+ROB_Scripts=/Users/robryd/scripts
+PATH=$PATH:$ROB_Scripts
+PS1='\[\033[01;36m\][HOME] \u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '

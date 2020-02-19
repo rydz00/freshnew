@@ -1,0 +1,12 @@
+set nocompatible
+set fileformats=unix,dos
+set history=100
+set ignorecase
+set number
+set showmatch
+syntax on
+highlight Comment ctermfg=LightCyan
+set wrap
+set incsearch
+set hlsearch
+set smartcase

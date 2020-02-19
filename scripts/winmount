@@ -1,0 +1,33 @@
+#! /usr/bin/perl
+$! = 42;
+
+unless ($ARGV[0])
+	{
+	die ("Usage: \# winmount hostname <admin password>\n");
+	}
+
+$dir = 'c\$';
+$dir = "shareddocs" if ($ARGV[0] eq "remmy");
+
+$host = $ARGV[0];
+$pass = $ARGV[1];
+
+
+	unless ($ARGV[1])
+		{
+		print "Password: ";
+		system "stty -echo";
+		$pass = <STDIN>;
+		system "stty echo";
+		print "\n";
+		}
+
+chomp($pass);
+chomp($host);
+
+unless ((-e "/mnt/$host") && (-d "/mnt/$host"))
+	{
+	system "mkdir /mnt/$host";
+	}
+
+exec "smbmount //$host/$dir /mnt/$host -o username=administrator,passwd=\"$pass\",dmask-777,fmask=777";

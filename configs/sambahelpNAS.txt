@@ -1,0 +1,4 @@
+cp /mnt/md1/smb.conf /etc/samba/smb.conf
+/etc/init.d/S61smb stop
+smbpasswd -a root
+/etc/init.d/S61smb start

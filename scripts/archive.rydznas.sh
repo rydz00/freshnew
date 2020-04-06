@@ -6,9 +6,9 @@ BASEDIR="/home/robryd/rydznas/"
 PICSBASEDIR="/home/robryd/rydznas/Pics/"
 
 #use WHITELIST
-#WHITELIST="Drive"
+WHITELIST="Drive"
 #WHITELIST="Music"
-WHITELIST="organized"
+#WHITELIST="organized"
 #WHITELIST="Apps"
 #WHITELIST="DVD_Rips"
 
@@ -21,10 +21,15 @@ BACKUPDIR="/home/robryd/stuff"
 #use this for WHITELIST
 cd $BASEDIR
 
+#use this for pics
 #for i in `cat /tmp/all.txt`;
+
+#uset this for WHITELIST
 for i in $WHITELIST;
+
 #normal usage for 1 tar
 #   do tar -zcvf $BACKUPDIR/rydznas.$i.$DATE.tgz $i > $BACKUPDIR/rydznas.$i.backup.log ; done
+
 #split an archive as you create it
    do tar -zcvf - $i | split --bytes=5GB - $BACKUPDIR/rydznas.$i.$DATE.tgz. > $BACKUPDIR/rydznas.$i.backup.log ; done
 

@@ -4,13 +4,13 @@ BASEDIR="/home/robryd/rydznas/"
 
 BACKUPDIR="/home/robryd/stuff"
 
-#VAULT=rydznas.drive
+VAULT=rydznas.drive
 #VAULT=rydznas.apps
 #VAULT=rydznas.pics
 #VAULT=rydznas.music
-VAULT=rydznas.organized
+#VAULT=rydznas.organized
 
-#use this for Pics backup
+#make a list of what to push up
 cd $BACKUPDIR
 :> /tmp/all.txt
 ls $BACKUPDIR > /tmp/all.txt

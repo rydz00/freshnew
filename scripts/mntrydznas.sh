@@ -3,7 +3,7 @@
 sudo mkdir /mnt/rydznas
 
 #samba mount
-#sudo smbmount //wwp-ldnrr01/Share /mnt/rydznas -o user=,domain=
+#sudo smbmount //windowshost/Share /mnt/rydznas -o user=,domain=
 
 #CIFS mount
 #sudo mount -t cifs //windowshost/Share /mnt/rydznas -o user=,domain=

@@ -1,3 +1,5 @@
 echo "rdesktop to what??"
 read name
-rdesktop -a 16 -x m -P -g 1280x700 -u username $name
+echo "what username??"
+read username
+rdesktop -a 16 -x m -P -g 1280x700 -u $username $name

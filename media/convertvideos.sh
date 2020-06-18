@@ -4,6 +4,8 @@ echo `wc -l ~/testvideo` items
 
 for i in `cat ~/testvideo`; do
 
-/opt/handbrake/HandBrakeCLI -i "$i" -o "$i".mp4 --preset="Android Tablet"
+/opt/handbrake/HandBrakeCLI -i "$i" -o "$i".mp4 --preset="Android 720p30"
+
+echo "Your video conversion is complete"
 
 done

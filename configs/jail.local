@@ -1,19 +1,19 @@
 [DEFAULT]
 bantime = 86400
-banaction = firewallcmd-ipset
-backend = systemd
-ignoreip = 127.0.0.1 5.5.5.0/24 96.72.205.209 185.101.218.180 192.81.110.7
+#banaction = firewallcmd-ipset
+banaction = iptables-multiport
+#backend = systemd
+ignoreip = 127.0.0.1 5.5.5.0/24 96.72.205.209 5.253.87.180 192.81.110.7
 findtime = 14400
-maxretry = 4
+maxretry = 2
 
 [sshd]
 enabled = true
 
-
 #################################################
 [DEFAULT]
 bantime = 86400
-ignoreip = 127.0.0.1 5.5.5.0/24 96.72.205.209 185.101.218.180 192.81.110.7
+ignoreip = 127.0.0.1 5.5.5.0/24 96.72.205.209 5.253.87.180 192.81.110.7
 findtime = 14400
 maxretry = 2
 
@@ -21,7 +21,7 @@ maxretry = 2
 enabled = true
 filter  = sshd
 action  = iptables[name=SSH, port=22, protocol=tcp]
-#          sendmail-whois[name=SSH, dest=remotecontroltech@live.com, sender=f2bssh@rydzew.ski, sendername="Fail2Ban"]
+#          sendmail-whois[name=SSH, dest=remotecontroltech@live.com, sender=remotecontroltech@live.com, sendername="Fail2Ban"]
 
 logpath = /var/log/secure
 maxretry = 2
@@ -30,7 +30,7 @@ maxretry = 2
 enabled  = true
 filter   = vsftpd
 action   = iptables[name=VSFTPD, port=21, protocol=tcp]
-#           sendmail-whois[name=VSFTPD, dest=remotecontroltech@live.com, sender=f2bftp@rydzew.ski, sendername="Fail2Ban"]
+#           sendmail-whois[name=VSFTPD, dest=remotecontroltech@live.com, sender=remotecontroltech@live.com, sendername="Fail2Ban"]
 
 logpath  = /var/log/vsftpd.log
 maxretry = 2

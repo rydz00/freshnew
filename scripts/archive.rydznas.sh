@@ -6,32 +6,43 @@ BASEDIR="/home/robryd/rydznas/"
 PICSBASEDIR="/home/robryd/rydznas/Pics/"
 
 #use WHITELIST
-WHITELIST="Drive"
-#WHITELIST="Music"
-#WHITELIST="organized"
-#WHITELIST="Apps"
-#WHITELIST="DVD_Rips"
+echo "pick which bundle to archive Drive, Music, organized, Apps, DVD_Rips, Pics"
+read whitelist
+
 
 BACKUPDIR="/home/robryd/stuff"
 
-#use this for Pics backup
-#ls $PICSBASEDIR > /tmp/all.txt
-#cd $PICSBASEDIR
+case $whitelist in
 
+   Pics)
+
+        cd $PICSBASEDIR
+
+#use this for pics
+for i in *;
+
+#split an archive as you create it
+     do tar -zcvf - $i | split --bytes=5GB - $BACKUPDIR/rydznas.$i.$DATE.tgz. > $BACKUPDIR/rydznas.$i.backup.log ; done
+
+#normal usage for 1 tar
+#do tar -zcvf $BACKUPDIR/rydznas.$i.$DATE.tgz $i > $BACKUPDIR/rydznas.$i.backup.log ; done
+       ;;
+
+    *)
 #use this for WHITELIST
 cd $BASEDIR
 
-#use this for pics
-#for i in `cat /tmp/all.txt`;
-
 #uset this for WHITELIST
-for i in $WHITELIST;
+for i in $whitelist;
 
 #normal usage for 1 tar
 #   do tar -zcvf $BACKUPDIR/rydznas.$i.$DATE.tgz $i > $BACKUPDIR/rydznas.$i.backup.log ; done
 
 #split an archive as you create it
-   do tar -zcvf - $i | split --bytes=5GB - $BACKUPDIR/rydznas.$i.$DATE.tgz. > $BACKUPDIR/rydznas.$i.backup.log ; done
+    do tar -zcvf - $i | split --bytes=5GB - $BACKUPDIR/rydznas.$i.$DATE.tgz. > $BACKUPDIR/rydznas.$i.backup.log ; done
+
+      ;;
+esac
 
 # upload a file
 # glacier-cmd upload --name "rydznas.Drive.20170130.tgz.aa" --description "Drive backup aa 20170130" rydznas.drive rydznas.Drive.20170130.tgz.aa

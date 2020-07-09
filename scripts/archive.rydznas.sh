@@ -6,7 +6,7 @@ BASEDIR="/home/robryd/rydznas/"
 PICSBASEDIR="/home/robryd/rydznas/Pics/"
 
 #use WHITELIST
-echo "pick which bundle to archive Drive, Music, organized, Apps, DVD_Rips, Pics"
+echo "pick which bundle to archive Drive, Music, organized, Apps, Pics"
 read whitelist
 
 

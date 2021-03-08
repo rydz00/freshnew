@@ -22,7 +22,7 @@ case $whitelist in
 for i in *;
 
 #split an archive as you create it
-     do tar -zcvf - $i | split --bytes=5GB - $BACKUPDIR/rydznas.$i.$DATE.tgz. > $BACKUPDIR/rydznas.$i.backup.log ; done
+     do tar -I pigz -cvf - $i | split --bytes=5GB - $BACKUPDIR/rydznas.$i.$DATE.tgz. > $BACKUPDIR/rydznas.$i.backup.log ; done
 
 #normal usage for 1 tar
 #do tar -zcvf $BACKUPDIR/rydznas.$i.$DATE.tgz $i > $BACKUPDIR/rydznas.$i.backup.log ; done
@@ -39,7 +39,7 @@ for i in $whitelist;
 #   do tar -zcvf $BACKUPDIR/rydznas.$i.$DATE.tgz $i > $BACKUPDIR/rydznas.$i.backup.log ; done
 
 #split an archive as you create it
-    do tar -zcvf - $i | split --bytes=5GB - $BACKUPDIR/rydznas.$i.$DATE.tgz. > $BACKUPDIR/rydznas.$i.backup.log ; done
+    do tar -I pigz -cvf - $i | split --bytes=5GB - $BACKUPDIR/rydznas.$i.$DATE.tgz. > $BACKUPDIR/rydznas.$i.backup.log ; done
 
       ;;
 esac

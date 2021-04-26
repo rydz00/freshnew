@@ -3,7 +3,7 @@ bantime = 86400
 #banaction = firewallcmd-ipset
 banaction = iptables-multiport
 #backend = systemd
-ignoreip = 127.0.0.1 5.5.5.0/24 96.72.205.209 5.253.87.180 192.81.110.7
+ignoreip = 127.0.0.1 5.5.5.0/24 167.160.87.144
 findtime = 14400
 maxretry = 2
 
@@ -13,7 +13,7 @@ enabled = true
 #################################################
 [DEFAULT]
 bantime = 86400
-ignoreip = 127.0.0.1 5.5.5.0/24 96.72.205.209 5.253.87.180 192.81.110.7
+ignoreip = 127.0.0.1 5.5.5.0/24 167.160.87.144 
 findtime = 14400
 maxretry = 2
 

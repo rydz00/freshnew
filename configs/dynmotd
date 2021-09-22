@@ -1,5 +1,6 @@
 #!/bin/bash
-echo "OS:" `cat /etc/centos-release`
+echo "OS:" `lsb_release -sd`
+#echo "OS:" `cat /etc/centos-release`
 #echo "OS:" `cat /etc/redhat-release`
 #echo "OS:" `cat /etc/fedora-release`
 echo "Kernel:" `uname -r`

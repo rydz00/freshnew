@@ -4,7 +4,7 @@ echo `wc -l ~/testvideo` items
 
 for i in `cat ~/testvideo`; do
 
-/opt/handbrake/HandBrakeCLI -i "$i" -o "$i".mp4 --preset="Android 720p30" --mixdown stereo
+/opt/handbrake/HandBrakeCLI -i "$i" -o "$i".roku.mp4 --preset="Roku 1080p30 Surround"
 
 echo "Your video conversion is complete"
 

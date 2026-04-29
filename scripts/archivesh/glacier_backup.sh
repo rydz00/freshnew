@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 # glacier_backup.sh — Incremental backup to AWS S3 (Glacier storage class)
-# Full backup: every 3 months | Incremental: weekly
+# Full backup: every 6 months | Incremental: weekly
+# temp partition quota: 60GB
 # =============================================================================
 
 set -euo pipefail
@@ -44,9 +45,12 @@ load_config() {
     : "${AWS_PROFILE:?AWS_PROFILE not set in config}"
 
     export AWS_PROFILE
-    FULL_CYCLE_DAYS="${FULL_CYCLE_DAYS:-90}"
+    FULL_CYCLE_DAYS="${FULL_CYCLE_DAYS:-180}"
     STORAGE_CLASS="${STORAGE_CLASS:-GLACIER}"        # or DEEP_ARCHIVE
     COMPRESS="${COMPRESS:-zstd}"                      # zstd | gzip | none
+    MIN_FREE_GB="${MIN_FREE_GB:-60}"                  # minimum free disk to keep after each archive
+    TMP_DIR="${TMP_DIR:-/tmp}"                        # where to write temp archives
+    TMP_WORK_DIR="$TMP_DIR"                           # used by free_bytes()
     EXCLUDE_PATTERNS=("${EXCLUDE_PATTERNS[@]+"${EXCLUDE_PATTERNS[@]}"}")
 }
 
@@ -63,6 +67,8 @@ cmd_setup() {
     read -rp "Full backup cycle in days [90]: " cycle; cycle="${cycle:-90}"
     read -rp "Storage class (GLACIER/DEEP_ARCHIVE) [GLACIER]: " storage; storage="${storage:-GLACIER}"
     read -rp "Compression (zstd/gzip/none) [zstd]: " compress; compress="${compress:-zstd}"
+    read -rp "Minimum free disk to keep after each archive in GB [60]: " min_free; min_free="${min_free:-60}"
+    read -rp "Temp directory for archives [/tmp]: " tmp_dir; tmp_dir="${tmp_dir:-/tmp}"
 
     cat > "$CONFIG_FILE" <<EOF
 # Glacier Backup Configuration — generated $(date)
@@ -73,6 +79,12 @@ BACKUP_DIRS=($(printf '"%s" ' "${backup_dirs[@]}"))
 FULL_CYCLE_DAYS=${cycle}
 STORAGE_CLASS="${storage}"
 COMPRESS="${compress}"
+
+# Disk space management
+# Archive one directory at a time; abort if free space would drop below this.
+MIN_FREE_GB=${min_free}
+# Temp directory where archives are written before upload (then immediately deleted)
+TMP_DIR="${tmp_dir}"
 
 # Optional exclude patterns (rsync-style globs)
 EXCLUDE_PATTERNS=(
@@ -127,6 +139,79 @@ compress_flag() {
     esac
 }
 
+# ── Disk space helpers ────────────────────────────────────────────────────────
+# Returns free bytes on the filesystem containing TMP_WORK_DIR
+free_bytes() {
+    df --output=avail -B1 "${TMP_WORK_DIR:-/tmp}" | tail -1 | tr -d ' '
+}
+
+# Returns the disk usage (bytes) of a directory tree
+dir_bytes() {
+    du -sb "$1" 2>/dev/null | awk '{print $1}'
+}
+
+# Human-readable bytes (no numfmt dependency here)
+human_bytes() {
+    local b=$1
+    if   (( b >= 1073741824 )); then printf "%.1f GB" "$(echo "scale=1; $b/1073741824" | bc)"
+    elif (( b >= 1048576    )); then printf "%.1f MB" "$(echo "scale=1; $b/1048576"    | bc)"
+    else printf "%d KB" "$(( b / 1024 ))"
+    fi
+}
+
+# Check we have at least MIN_FREE_GB free after the archive is written.
+# $1 = estimated compressed size in bytes
+check_disk_space() {
+    local needed_bytes="$1"
+    local free; free=$(free_bytes)
+    local min_free_bytes=$(( MIN_FREE_GB * 1024 * 1024 * 1024 ))
+    local required=$(( needed_bytes + min_free_bytes ))
+
+    if (( free < required )); then
+        die "Insufficient disk space for this archive.\n" \
+            "  Available : $(human_bytes "$free")\n" \
+            "  Needed    : $(human_bytes "$needed_bytes") + ${MIN_FREE_GB} GB headroom = $(human_bytes "$required")\n" \
+            "  Tip: set a smaller TMP_DIR in config, or free up space first."
+    fi
+    info "Disk space OK — free: $(human_bytes "$free"), needed: $(human_bytes "$needed_bytes") + ${MIN_FREE_GB} GB headroom"
+}
+
+# Estimate compressed size: sample compress ratio from a small subset, apply to raw size.
+# Falls back to raw_bytes * 0.6 if the dir is too small to sample.
+estimate_compressed_size() {
+    local src_dir="$1"
+    local raw; raw=$(dir_bytes "$src_dir")
+
+    # If less than 1 MB, just use raw size (tiny dirs compress fast; don't bother sampling)
+    if (( raw < 1048576 )); then
+        echo "$raw"
+        return
+    fi
+
+    # Sample up to 32 MB of data, compress it, measure ratio
+    local sample_raw sample_comp ratio
+    sample_raw=$(tar -cf - --one-file-system "$src_dir" 2>/dev/null | head -c 33554432 | wc -c)
+    if (( sample_raw < 1024 )); then
+        echo "$(( raw * 6 / 10 ))"   # fallback: assume 60% of raw
+        return
+    fi
+
+    case "$COMPRESS" in
+        zstd) sample_comp=$(tar -cf - --one-file-system "$src_dir" 2>/dev/null | \
+                            head -c 33554432 | zstd -q -3 | wc -c) ;;
+        gzip) sample_comp=$(tar -cf - --one-file-system "$src_dir" 2>/dev/null | \
+                            head -c 33554432 | gzip -1 -c | wc -c) ;;
+        *)    sample_comp=$sample_raw ;;
+    esac
+
+    (( sample_comp < 1 )) && sample_comp=1
+    # ratio as integer percentage (compressed / raw * 100), capped 1-100
+    ratio=$(( sample_comp * 100 / sample_raw ))
+    (( ratio < 1  )) && ratio=1
+    (( ratio > 100 )) && ratio=100
+    echo $(( raw * ratio / 100 ))
+}
+
 # ── Upload a file to S3 ───────────────────────────────────────────────────────
 s3_upload() {
     local local_file="$1" s3_key="$2"
@@ -144,41 +229,94 @@ delete_old_full() {
     info "Old full backup deleted."
 }
 
-# ── Full backup ───────────────────────────────────────────────────────────────
+# ── Full backup — one directory at a time ─────────────────────────────────────
 run_full_backup() {
     local timestamp; timestamp=$(date '+%Y%m%d_%H%M%S')
     local label="full_${timestamp}"
     local ext; ext=$(compress_ext)
     local cflag; cflag=$(compress_flag)
-    local tmp_dir; tmp_dir=$(mktemp -d)
-    local manifest="${MANIFEST_DIR}/${label}.manifest"
+    local combined_manifest="${MANIFEST_DIR}/${label}.manifest"
+    local total_bytes=0
 
     info "Starting FULL backup (label: ${label})"
+    info "Processing ${#BACKUP_DIRS[@]} director(ies) one at a time (disk headroom: ${MIN_FREE_GB} GB)"
 
     # Capture old full label before overwriting state
     local old_full_label=""
     [[ -f "${STATE_DIR}/current_full_label" ]] && old_full_label=$(cat "${STATE_DIR}/current_full_label")
 
-    # Build archive of each directory
     local -a excludes; IFS=' ' read -ra excludes <<< "$(build_excludes)"
-    local archive="${tmp_dir}/${label}.${ext}"
 
-    # shellcheck disable=SC2068
-    tar ${cflag} -cf "$archive" ${excludes[@]+"${excludes[@]}"} "${BACKUP_DIRS[@]}" \
-        2>>"$LOG_FILE" || warn "tar exited with warnings (check log)"
+    # Combined manifest accumulates file lists from every directory archive
+    : > "$combined_manifest"
 
-    # Generate manifest (file list)
-    tar -tf "$archive" > "$manifest" 2>/dev/null || true
+    local dir_index=0
+    for src_dir in "${BACKUP_DIRS[@]}"; do
+        (( dir_index++ )) || true
 
-    local s3_key="${S3_PREFIX}/${label}/${label}.${ext}"
-    local manifest_key="${S3_PREFIX}/${label}/manifest.txt"
+        if [[ ! -d "$src_dir" ]]; then
+            warn "[${dir_index}/${#BACKUP_DIRS[@]}] Skipping non-existent directory: ${src_dir}"
+            continue
+        fi
 
-    s3_upload "$archive"   "$s3_key"
-    s3_upload "$manifest"  "$manifest_key"
+        # Sanitise directory path into a safe archive name segment
+        local safe_name; safe_name=$(echo "$src_dir" | sed 's|^/||; s|/|_|g')
+        local part_label="${label}__${safe_name}"
+        local archive_name="${part_label}.${ext}"
 
-    # Upload metadata
-    local meta="${tmp_dir}/meta.json"
-    cat > "$meta" <<JSON
+        info "━━━ [${dir_index}/${#BACKUP_DIRS[@]}] ${src_dir} ━━━"
+
+        # ── Estimate size & check disk space ──────────────────────────────────
+        info "Estimating size of ${src_dir} ..."
+        local est_bytes; est_bytes=$(estimate_compressed_size "$src_dir")
+        info "Estimated compressed size: $(human_bytes "$est_bytes")"
+        check_disk_space "$est_bytes"
+
+        # ── Create archive in a fresh per-directory temp dir ──────────────────
+        local tmp_dir; tmp_dir=$(mktemp -d --tmpdir="${TMP_DIR:-/tmp}" glacier-backup-XXXXXX)
+
+        # Trap ensures temp dir is always cleaned up even on error
+        local _tmp_cleanup="$tmp_dir"
+        trap 'rm -rf "$_tmp_cleanup"; rmdir "$LOCK_FILE" 2>/dev/null; exit' INT TERM EXIT
+
+        local archive="${tmp_dir}/${archive_name}"
+
+        info "Archiving ${src_dir} → ${archive_name} ..."
+        # shellcheck disable=SC2068
+        tar ${cflag} -cf "$archive" \
+            --one-file-system \
+            ${excludes[@]+"${excludes[@]}"} \
+            "$src_dir" \
+            2>>"$LOG_FILE" || warn "tar exited with warnings for ${src_dir} (check log)"
+
+        local actual_bytes; actual_bytes=$(stat -c%s "$archive")
+        total_bytes=$(( total_bytes + actual_bytes ))
+        info "Archive size: $(human_bytes "$actual_bytes")"
+
+        # ── Generate per-directory manifest ───────────────────────────────────
+        local part_manifest="${tmp_dir}/${part_label}.manifest"
+        tar -tf "$archive" > "$part_manifest" 2>/dev/null || true
+        # Append to combined manifest
+        cat "$part_manifest" >> "$combined_manifest"
+
+        # ── Upload archive + manifest ─────────────────────────────────────────
+        local s3_archive_key="${S3_PREFIX}/${label}/parts/${archive_name}"
+        local s3_manifest_key="${S3_PREFIX}/${label}/parts/${part_label}.manifest"
+
+        s3_upload "$archive"       "$s3_archive_key"
+        s3_upload "$part_manifest" "$s3_manifest_key"
+
+        # ── Wipe temp dir immediately to reclaim disk ─────────────────────────
+        rm -rf "$tmp_dir"
+        info "Temp files removed. Free space: $(human_bytes "$(free_bytes)")"
+
+        # Reset trap to plain lock-only cleanup now that tmp_dir is gone
+        trap 'rmdir "$LOCK_FILE" 2>/dev/null; exit' INT TERM EXIT
+    done
+
+    # ── Upload combined manifest & metadata ───────────────────────────────────
+    local meta_tmp; meta_tmp=$(mktemp)
+    cat > "$meta_tmp" <<JSON
 {
   "type": "full",
   "label": "${label}",
@@ -186,31 +324,30 @@ run_full_backup() {
   "hostname": "$(hostname)",
   "dirs": $(printf '%s\n' "${BACKUP_DIRS[@]}" | jq -R . | jq -sc .),
   "storage_class": "${STORAGE_CLASS}",
-  "size_bytes": $(stat -c%s "$archive")
+  "total_size_bytes": ${total_bytes},
+  "parts": ${dir_index}
 }
 JSON
-    s3_upload "$meta" "${S3_PREFIX}/${label}/meta.json"
+    s3_upload "$combined_manifest" "${S3_PREFIX}/${label}/manifest.txt"
+    s3_upload "$meta_tmp"          "${S3_PREFIX}/${label}/meta.json"
+    rm -f "$meta_tmp"
 
-    # Update state
-    echo "$timestamp" > "${STATE_DIR}/last_full_backup"   # seconds for comparison
+    # ── Update local state ────────────────────────────────────────────────────
     date +%s > "${STATE_DIR}/last_full_backup"
     echo "$label" > "${STATE_DIR}/current_full_label"
-    echo "$(date +%s)" > "${STATE_DIR}/last_full_timestamp"
+    date +%s  > "${STATE_DIR}/last_full_timestamp"
+    cp "$combined_manifest" "${STATE_DIR}/last_full.manifest"
 
-    # Record for incremental reference
-    cp "$manifest" "${STATE_DIR}/last_full.manifest"
-
-    # Delete previous full backup from S3
+    # ── Delete previous full backup from S3 ───────────────────────────────────
     if [[ -n "$old_full_label" && "$old_full_label" != "$label" ]]; then
         delete_old_full "${S3_PREFIX}/${old_full_label}"
     fi
 
-    rm -rf "$tmp_dir"
-    info "Full backup complete: s3://${S3_BUCKET}/${S3_PREFIX}/${label}/"
+    info "Full backup complete: s3://${S3_BUCKET}/${S3_PREFIX}/${label}/ (total: $(human_bytes "$total_bytes"))"
     echo "$label"
 }
 
-# ── Incremental backup ────────────────────────────────────────────────────────
+# ── Incremental backup — one directory at a time ──────────────────────────────
 run_incremental_backup() {
     local full_label; full_label=$(cat "${STATE_DIR}/current_full_label" 2>/dev/null) \
         || die "No full backup found. Run a full backup first."
@@ -218,35 +355,82 @@ run_incremental_backup() {
     local label="incr_${timestamp}"
     local ext; ext=$(compress_ext)
     local cflag; cflag=$(compress_flag)
-    local tmp_dir; tmp_dir=$(mktemp -d)
-    local snapshot_file="${STATE_DIR}/tar_snapshot.snar"
+    local total_bytes=0
 
     info "Starting INCREMENTAL backup (label: ${label}, base: ${full_label})"
+    info "Processing ${#BACKUP_DIRS[@]} director(ies) one at a time (disk headroom: ${MIN_FREE_GB} GB)"
 
     local -a excludes; IFS=' ' read -ra excludes <<< "$(build_excludes)"
-    local archive="${tmp_dir}/${label}.${ext}"
+    local combined_manifest="${MANIFEST_DIR}/${label}.manifest"
+    : > "$combined_manifest"
 
-    # --listed-incremental makes tar track changes via snapshot file
-    # shellcheck disable=SC2068
-    tar ${cflag} -cf "$archive" \
-        --listed-incremental="$snapshot_file" \
-        ${excludes[@]+"${excludes[@]}"} \
-        "${BACKUP_DIRS[@]}" \
-        2>>"$LOG_FILE" || warn "tar exited with warnings"
+    # Each directory has its own snapshot file so incremental tracking is per-dir
+    local snapshot_base="${STATE_DIR}/snapshots"
+    mkdir -p "$snapshot_base"
 
-    local manifest="${tmp_dir}/manifest.txt"
-    tar -tf "$archive" > "$manifest" 2>/dev/null || true
+    local dir_index=0
+    for src_dir in "${BACKUP_DIRS[@]}"; do
+        (( dir_index++ )) || true
 
-    local s3_key="${S3_PREFIX}/${full_label}/incrementals/${label}.${ext}"
-    local manifest_key="${S3_PREFIX}/${full_label}/incrementals/${label}.manifest"
-    local snap_key="${S3_PREFIX}/${full_label}/incrementals/${label}.snar"
+        if [[ ! -d "$src_dir" ]]; then
+            warn "[${dir_index}/${#BACKUP_DIRS[@]}] Skipping non-existent directory: ${src_dir}"
+            continue
+        fi
 
-    s3_upload "$archive"        "$s3_key"
-    s3_upload "$manifest"       "$manifest_key"
-    s3_upload "$snapshot_file"  "$snap_key"
+        local safe_name; safe_name=$(echo "$src_dir" | sed 's|^/||; s|/|_|g')
+        local part_label="${label}__${safe_name}"
+        local archive_name="${part_label}.${ext}"
+        # Per-directory snapshot file — persists between runs to track changes
+        local snapshot_file="${snapshot_base}/${safe_name}.snar"
 
-    local meta="${tmp_dir}/meta.json"
-    cat > "$meta" <<JSON
+        info "━━━ [${dir_index}/${#BACKUP_DIRS[@]}] ${src_dir} ━━━"
+
+        # ── Estimate changed data size & check disk space ─────────────────────
+        # For incrementals, raw dir size is an upper bound; actual will be smaller
+        local est_bytes; est_bytes=$(dir_bytes "$src_dir")
+        info "Source size (upper bound for estimation): $(human_bytes "$est_bytes")"
+        check_disk_space "$(( est_bytes * 6 / 10 ))"   # assume ~60% compressed
+
+        # ── Create incremental archive ────────────────────────────────────────
+        local tmp_dir; tmp_dir=$(mktemp -d --tmpdir="${TMP_DIR:-/tmp}" glacier-backup-XXXXXX)
+        local _tmp_cleanup="$tmp_dir"
+        trap 'rm -rf "$_tmp_cleanup"; rmdir "$LOCK_FILE" 2>/dev/null; exit' INT TERM EXIT
+
+        local archive="${tmp_dir}/${archive_name}"
+
+        info "Archiving changes in ${src_dir} → ${archive_name} ..."
+        # shellcheck disable=SC2068
+        tar ${cflag} -cf "$archive" \
+            --listed-incremental="$snapshot_file" \
+            --one-file-system \
+            ${excludes[@]+"${excludes[@]}"} \
+            "$src_dir" \
+            2>>"$LOG_FILE" || warn "tar exited with warnings for ${src_dir}"
+
+        local actual_bytes; actual_bytes=$(stat -c%s "$archive")
+        total_bytes=$(( total_bytes + actual_bytes ))
+        info "Archive size: $(human_bytes "$actual_bytes")"
+
+        # ── Manifest ──────────────────────────────────────────────────────────
+        local part_manifest="${tmp_dir}/${part_label}.manifest"
+        tar -tf "$archive" > "$part_manifest" 2>/dev/null || true
+        cat "$part_manifest" >> "$combined_manifest"
+
+        # ── Upload archive, manifest, snapshot ───────────────────────────────
+        local s3_base="${S3_PREFIX}/${full_label}/incrementals/${label}"
+        s3_upload "$archive"       "${s3_base}__${safe_name}.${ext}"
+        s3_upload "$part_manifest" "${s3_base}__${safe_name}.manifest"
+        s3_upload "$snapshot_file" "${s3_base}__${safe_name}.snar"
+
+        # ── Wipe temp dir immediately ─────────────────────────────────────────
+        rm -rf "$tmp_dir"
+        info "Temp files removed. Free space: $(human_bytes "$(free_bytes)")"
+        trap 'rmdir "$LOCK_FILE" 2>/dev/null; exit' INT TERM EXIT
+    done
+
+    # ── Upload combined manifest & metadata ───────────────────────────────────
+    local meta_tmp; meta_tmp=$(mktemp)
+    cat > "$meta_tmp" <<JSON
 {
   "type": "incremental",
   "label": "${label}",
@@ -254,13 +438,15 @@ run_incremental_backup() {
   "timestamp": "$(date -Iseconds)",
   "hostname": "$(hostname)",
   "storage_class": "${STORAGE_CLASS}",
-  "size_bytes": $(stat -c%s "$archive")
+  "total_size_bytes": ${total_bytes},
+  "parts": ${dir_index}
 }
 JSON
-    s3_upload "$meta" "${S3_PREFIX}/${full_label}/incrementals/${label}.meta.json"
+    s3_upload "$combined_manifest" "${S3_PREFIX}/${full_label}/incrementals/${label}.manifest"
+    s3_upload "$meta_tmp"          "${S3_PREFIX}/${full_label}/incrementals/${label}.meta.json"
+    rm -f "$meta_tmp"
 
-    rm -rf "$tmp_dir"
-    info "Incremental backup complete: s3://${S3_BUCKET}/${s3_key}"
+    info "Incremental backup complete — total uploaded: $(human_bytes "$total_bytes")"
     echo "$label"
 }
 
@@ -421,44 +607,75 @@ cmd_restore() {
     fi
 
     mkdir -p "$restore_dest"
-    local tmp_dir; tmp_dir=$(mktemp -d)
+    local tmp_dir; tmp_dir=$(mktemp -d --tmpdir="${TMP_DIR:-/tmp}" glacier-restore-XXXXXX)
     local ext; ext=$(compress_ext)
+    local xflag; xflag=$(compress_flag)
 
     log "Restoring full backup: ${full_label} → ${restore_dest}"
 
-    # Download full archive
-    local full_key="${S3_PREFIX}/${full_label}/${full_label}.${ext}"
-    info "Downloading full archive..."
-    aws s3 cp "s3://${S3_BUCKET}/${full_key}" "${tmp_dir}/full.${ext}" \
-        --profile "$AWS_PROFILE"
-
-    # Extract
-    local xflag; xflag=$(compress_flag)
-    if [[ -n "$file_filter" ]]; then
-        info "Extracting files matching: ${file_filter}"
-        # shellcheck disable=SC2086
-        tar ${xflag} -xf "${tmp_dir}/full.${ext}" -C "$restore_dest" \
-            --wildcards "*${file_filter}*" 2>>"$LOG_FILE" || warn "Some files may not have matched"
-    else
-        # shellcheck disable=SC2086
-        tar ${xflag} -xf "${tmp_dir}/full.${ext}" -C "$restore_dest" 2>>"$LOG_FILE"
-    fi
-
-    info "Full backup extracted."
-
-    # Apply incrementals in order
-    local incrs
-    incrs=$(aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/${full_label}/incrementals/" \
+    # ── List all part archives under this full backup ─────────────────────────
+    local parts
+    parts=$(aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/${full_label}/parts/" \
         --profile "$AWS_PROFILE" 2>/dev/null | \
         grep "\.${ext}$" | sort | awk '{print $4}' || true)
 
-    if [[ -n "$incrs" ]]; then
+    if [[ -z "$parts" ]]; then
+        die "No archive parts found for ${full_label}. Has a Glacier restore been initiated?"
+    fi
+
+    while IFS= read -r part_file; do
+        [[ -z "$part_file" ]] && continue
+        info "Downloading part: ${part_file}"
+        local part_key="${S3_PREFIX}/${full_label}/parts/${part_file}"
+
+        # Check disk space before each download
+        local part_size
+        part_size=$(aws s3api head-object --bucket "$S3_BUCKET" --key "$part_key" \
+            --profile "$AWS_PROFILE" --query ContentLength --output text 2>/dev/null || echo 0)
+        check_disk_space "$part_size"
+
+        aws s3 cp "s3://${S3_BUCKET}/${part_key}" "${tmp_dir}/${part_file}" \
+            --profile "$AWS_PROFILE"
+
+        info "Extracting: ${part_file}"
+        if [[ -n "$file_filter" ]]; then
+            # shellcheck disable=SC2086
+            tar ${xflag} -xf "${tmp_dir}/${part_file}" -C "$restore_dest" \
+                --wildcards "*${file_filter}*" 2>>"$LOG_FILE" || warn "No matches in ${part_file}"
+        else
+            # shellcheck disable=SC2086
+            tar ${xflag} -xf "${tmp_dir}/${part_file}" -C "$restore_dest" 2>>"$LOG_FILE"
+        fi
+
+        # Delete downloaded part immediately to free space before the next
+        rm -f "${tmp_dir}/${part_file}"
+        info "Part removed. Free space: $(human_bytes "$(free_bytes)")"
+    done <<< "$parts"
+
+    info "Full backup extracted."
+
+    # ── Apply incrementals in order ───────────────────────────────────────────
+    local incr_archives
+    incr_archives=$(aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/${full_label}/incrementals/" \
+        --profile "$AWS_PROFILE" 2>/dev/null | \
+        grep "\.${ext}$" | sort | awk '{print $4}' || true)
+
+    if [[ -n "$incr_archives" ]]; then
         info "Applying incremental backups..."
         while IFS= read -r incr_file; do
-            info "Applying: ${incr_file}"
+            [[ -z "$incr_file" ]] && continue
+            info "Downloading incremental: ${incr_file}"
             local incr_key="${S3_PREFIX}/${full_label}/incrementals/${incr_file}"
+
+            local incr_size
+            incr_size=$(aws s3api head-object --bucket "$S3_BUCKET" --key "$incr_key" \
+                --profile "$AWS_PROFILE" --query ContentLength --output text 2>/dev/null || echo 0)
+            check_disk_space "$incr_size"
+
             aws s3 cp "s3://${S3_BUCKET}/${incr_key}" "${tmp_dir}/${incr_file}" \
                 --profile "$AWS_PROFILE"
+
+            info "Applying: ${incr_file}"
             if [[ -n "$file_filter" ]]; then
                 # shellcheck disable=SC2086
                 tar ${xflag} -xf "${tmp_dir}/${incr_file}" -C "$restore_dest" \
@@ -467,7 +684,10 @@ cmd_restore() {
                 # shellcheck disable=SC2086
                 tar ${xflag} -xf "${tmp_dir}/${incr_file}" -C "$restore_dest" 2>>"$LOG_FILE"
             fi
-        done <<< "$incrs"
+
+            rm -f "${tmp_dir}/${incr_file}"
+            info "Incremental removed. Free space: $(human_bytes "$(free_bytes)")"
+        done <<< "$incr_archives"
     fi
 
     rm -rf "$tmp_dir"
@@ -486,30 +706,27 @@ cmd_restore_init() {
     echo "Note: Bulk=5-12h, Standard=3-5h, Expedited=1-5min (higher cost)"
 
     local ext; ext=$(compress_ext)
-    local full_key="${S3_PREFIX}/${full_label}/${full_label}.${ext}"
 
-    aws s3api restore-object \
-        --bucket "$S3_BUCKET" \
-        --key "$full_key" \
-        --restore-request "Days=7,GlacierJobParameters={Tier=${tier}}" \
-        --profile "$AWS_PROFILE" \
-        && echo -e "${GREEN}Restore request submitted. Object will be available in S3 Standard temporarily.${RESET}"
-
-    # Also initiate for incrementals
-    local incrs
-    incrs=$(aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/${full_label}/incrementals/" \
+    # Initiate restore on every part archive
+    local parts
+    parts=$(aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/${full_label}/parts/" \
         --profile "$AWS_PROFILE" 2>/dev/null | \
         grep "\.${ext}$" | awk '{print $4}' || true)
 
-    while IFS= read -r incr; do
-        [[ -z "$incr" ]] && continue
+    if [[ -z "$parts" ]]; then
+        warn "No part archives found — has this backup been created yet?"
+        return 1
+    fi
+
+    while IFS= read -r part; do
+        [[ -z "$part" ]] && continue
         aws s3api restore-object \
             --bucket "$S3_BUCKET" \
-            --key "${S3_PREFIX}/${full_label}/incrementals/${incr}" \
+            --key "${S3_PREFIX}/${full_label}/parts/${part}" \
             --restore-request "Days=7,GlacierJobParameters={Tier=${tier}}" \
             --profile "$AWS_PROFILE" \
-            && echo "Restore initiated: ${incr}"
-    done <<< "$incrs"
+            && echo "Restore initiated: ${part}"
+    done <<< "$parts"
 }
 
 # ── Status ────────────────────────────────────────────────────────────────────

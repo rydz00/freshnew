@@ -2,7 +2,7 @@
 # =============================================================================
 # glacier_backup.sh — Incremental backup to AWS S3 (Glacier storage class)
 # Full backup: every 6 months | Incremental: weekly
-# temp partition quota: 60GB
+# temp partition quota: variable
 # =============================================================================
 
 set -euo pipefail
@@ -48,8 +48,8 @@ load_config() {
     FULL_CYCLE_DAYS="${FULL_CYCLE_DAYS:-180}"
     STORAGE_CLASS="${STORAGE_CLASS:-GLACIER}"        # or DEEP_ARCHIVE
     COMPRESS="${COMPRESS:-zstd}"                      # zstd | gzip | none
-    MIN_FREE_GB="${MIN_FREE_GB:-60}"                  # minimum free disk to keep after each archive
-    TMP_DIR="${TMP_DIR:-/tmp}"                        # where to write temp archives
+    MIN_FREE_GB="${MIN_FREE_GB:-1}"                  # minimum free disk to keep after each archive
+    TMP_DIR="${TMP_DIR:-/home/robryd/rydznas/tmp}"                        # where to write temp archives
     TMP_WORK_DIR="$TMP_DIR"                           # used by free_bytes()
     EXCLUDE_PATTERNS=("${EXCLUDE_PATTERNS[@]+"${EXCLUDE_PATTERNS[@]}"}")
 }
@@ -64,7 +64,7 @@ cmd_setup() {
     read -rp "S3 bucket name: " s3_bucket
     read -rp "S3 key prefix [backups/$(hostname)]: " s3_prefix; s3_prefix="${s3_prefix:-backups/$(hostname)}"
     read -rp "Directories to back up (space-separated): " -a backup_dirs
-    read -rp "Full backup cycle in days [90]: " cycle; cycle="${cycle:-90}"
+    read -rp "Full backup cycle in days [180]: " cycle; cycle="${cycle:-180}"
     read -rp "Storage class (GLACIER/DEEP_ARCHIVE) [GLACIER]: " storage; storage="${storage:-GLACIER}"
     read -rp "Compression (zstd/gzip/none) [zstd]: " compress; compress="${compress:-zstd}"
     read -rp "Minimum free disk to keep after each archive in GB [60]: " min_free; min_free="${min_free:-60}"

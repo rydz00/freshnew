@@ -6,7 +6,7 @@ Incremental backup system for Linux. Stores archives in S3 with Glacier storage 
 
 | Backup Type | Trigger | Behaviour |
 |---|---|---|
-| **Full** | Every 90 days (configurable) | Complete tar archive of all dirs; old full deleted |
+| **Full** | Every 180 days (configurable) | Complete tar archive of all dirs; old full deleted |
 | **Incremental** | Weekly (via cron) | Only files changed since last run (tar `--listed-incremental`) |
 
 ## Files

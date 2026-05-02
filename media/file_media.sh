@@ -185,7 +185,7 @@ while IFS= read -r -d '' file; do
     ext_lower="${ext,,}"   # lowercase
 
     case "$ext_lower" in
-        jpg|jpeg|png|heic)
+        jpg|jpeg|png|gif|heic)
             if file_item "$file" ""; then
                 count_ok=$((count_ok + 1))
             else

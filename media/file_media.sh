@@ -192,7 +192,7 @@ while IFS= read -r -d '' file; do
                 count_err=$((count_err +1))
             fi
             ;;
-        mov|mpeg|mp4|m4v)
+        mov|mpeg|mp4|m4v|avi)
             if file_item "$file" "vids"; then
                 count_ok=$((count_ok + 1))
             else

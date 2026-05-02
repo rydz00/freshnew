@@ -23,7 +23,9 @@
 #   --log FILE   Write a log to FILE (default: ./file_media.log)
 # =============================================================================
 
-set -euo pipefail
+#set -euo pipefail
+# Note: intentionally no 'set -e' — errors are caught per-file so the loop always continues
+
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 TARGET_BASE="/home/robryd/rydznas/Pics"
@@ -60,7 +62,7 @@ get_timestamp() {
     local ts=""
 
     # Try tags in order of preference
-    for tag in DateTimeOriginal CreateDate MediaCreateDate TrackCreateDate; do
+    for tag in DateTimeOriginal CreateDate MediaCreateDate TrackCreateDate FileModifyDate; do
         ts=$(exiftool -s3 -"$tag" "$file" 2>/dev/null | head -1)
         if [[ -n "$ts" && "$ts" != "0000:00:00 00:00:00" ]]; then
             break
@@ -183,23 +185,23 @@ while IFS= read -r -d '' file; do
     ext_lower="${ext,,}"   # lowercase
 
     case "$ext_lower" in
-        jpg|jpeg)
+        jpg|jpeg|png|heic)
             if file_item "$file" ""; then
-                ((count_ok++))
+                count_ok=$((count_ok + 1))
             else
-                ((count_err++))
+                count_err=$((count_err +1))
             fi
             ;;
         mov|mpeg|mp4|m4v)
             if file_item "$file" "vids"; then
-                ((count_ok++))
+                count_ok=$((count_ok + 1))
             else
-                ((count_err++))
+                count_err=$((count_err + 1))
             fi
             ;;
         *)
             log "  SKIP: '$rel' — not a handled file type"
-            ((count_skip++))
+            count_skip=$((count_skip + 1))
             ;;
     esac
 

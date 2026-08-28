@@ -45,7 +45,7 @@ load_config() {
     : "${AWS_PROFILE:?AWS_PROFILE not set in config}"
 
     export AWS_PROFILE
-    FULL_CYCLE_DAYS="${FULL_CYCLE_DAYS:-180}"
+    FULL_CYCLE_DAYS="${FULL_CYCLE_DAYS:-90}"
     STORAGE_CLASS="${STORAGE_CLASS:-GLACIER}"        # or DEEP_ARCHIVE
     COMPRESS="${COMPRESS:-zstd}"                      # zstd | gzip | none
     MIN_FREE_GB="${MIN_FREE_GB:-1}"                  # minimum free disk to keep after each archive
